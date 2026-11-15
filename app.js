@@ -263,7 +263,7 @@ function resumeText(R) {
 
 // ---------- AI mode ----------
 // Shared AI server (Cloudflare Worker holding the keys). Paste its address here.
-const WORKER_URL = '';
+const WORKER_URL = 'https://resume-tailor-ai.syedsiddiqhussain007.workers.dev';
 const TIMEOUT_MS = 45000;
 const SYSTEM_PROMPT = `You are an expert resume writer who tailors resumes for ATS systems.
 STRICT RULES:
@@ -296,7 +296,7 @@ const ATTEMPTS = {
   } },
   server: { name: 'shared AI server', key: () => WORKER_URL, async run(user) {
     // The server itself switches Groq -> Gemini -> NVIDIA, so allow time for all three.
-    const d = await postJSON(WORKER_URL, {}, { system: SYSTEM_PROMPT, user }, 130000);
+    const d = await postJSON(WORKER_URL, {}, { system: SYSTEM_PROMPT, user }, 180000);
     this.used = d.provider;
     return d.text || '';
   } }
@@ -312,7 +312,7 @@ async function callAI(jd, resume, kws, matchedTerms, missingTerms) {
     const a = ATTEMPTS[k];
     setStatus(errors.length ? `${errors[errors.length - 1]}. Trying ${a.name}...` : `Rewriting with ${a.name}...`);
     try {
-      const text = await a.run(user);
+      const text = (await a.run(user)).replace(/<think>[\s\S]*?<\/think>/g, '');
       const s = text.indexOf('{'), e = text.lastIndexOf('}');
       if (s < 0 || e < 0) throw new Error('no resume in reply');
       j = JSON.parse(text.slice(s, e + 1));

@@ -40,17 +40,45 @@ export default {
 
     const errors = [];
     for (const p of providers) {
-      try {
-        const text = await CALL[p](env, system, user);
-        if (text && text.includes('{')) return json({ text, provider: p });
-        errors.push(p + ': empty reply');
-      } catch (e) {
-        errors.push(p + ': ' + (e.name === 'TimeoutError' ? 'timed out' : e.message));
+      // Models get retired over time, so pick from the provider's live model list.
+      const models = (await pickModels(p, env)).slice(0, 2);
+      for (const model of models) {
+        try {
+          const text = (await CALL[p](env, system, user, model) || '').replace(/<think>[\s\S]*?<\/think>/g, '');
+          if (text.includes('{')) return json({ text, provider: p, model });
+          errors.push(`${p} ${model}: empty reply`);
+        } catch (e) {
+          errors.push(`${p} ${model}: ` + (e.name === 'TimeoutError' ? 'timed out' : e.message));
+        }
       }
     }
     return json({ error: 'All AI providers failed. ' + errors.join(' | ') }, 502);
   }
 };
+
+// Preferred models, best first. Only ones the provider still offers are used.
+const PREFS = {
+  groq: ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile', 'meta-llama/llama-4-maverick-17b-128e-instruct', 'qwen/qwen3-32b', 'openai/gpt-oss-20b', 'llama-3.1-8b-instant'],
+  gemini: ['gemini-2.5-flash', 'gemini-flash-latest'],
+  nvidia: ['mistralai/mistral-large-2-instruct', 'deepseek-ai/deepseek-v4.1-flash', 'nvidia/nemotron-3-super-120b-a12b', 'openai/gpt-oss-20b']
+};
+const LIST = {
+  groq: (env) => ['https://api.groq.com/openai/v1/models', { Authorization: 'Bearer ' + env.GROQ_KEY }],
+  nvidia: (env) => ['https://integrate.api.nvidia.com/v1/models', { Authorization: 'Bearer ' + env.NVIDIA_KEY }]
+};
+async function pickModels(p, env) {
+  const override = env[p.toUpperCase() + '_MODEL'];
+  let prefs = PREFS[p];
+  if (LIST[p]) {
+    try {
+      const [url, headers] = LIST[p](env);
+      const res = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
+      const ids = new Set(((await res.json()).data || []).map((m) => m.id));
+      if (ids.size) prefs = prefs.filter((m) => ids.has(m));
+    } catch { /* fall back to the preference list */ }
+  }
+  return override ? [override, ...prefs.filter((m) => m !== override)] : prefs;
+}
 
 async function post(url, headers, payload) {
   const res = await fetch(url, {
@@ -69,13 +97,12 @@ const chat = (system, user, model, extra = {}) => ({
 });
 
 const CALL = {
-  async groq(env, system, user) {
+  async groq(env, system, user, model) {
     const d = await post('https://api.groq.com/openai/v1/chat/completions', { Authorization: 'Bearer ' + env.GROQ_KEY },
-      chat(system, user, env.GROQ_MODEL || 'llama-3.3-70b-versatile', { response_format: { type: 'json_object' } }));
+      chat(system, user, model, { response_format: { type: 'json_object' } }));
     return d.choices?.[0]?.message?.content;
   },
-  async gemini(env, system, user) {
-    const model = env.GEMINI_MODEL || 'gemini-2.5-flash';
+  async gemini(env, system, user, model) {
     const d = await post(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, { 'x-goog-api-key': env.GEMINI_KEY }, {
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: user }] }],
@@ -83,9 +110,9 @@ const CALL = {
     });
     return (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
   },
-  async nvidia(env, system, user) {
+  async nvidia(env, system, user, model) {
     const d = await post('https://integrate.api.nvidia.com/v1/chat/completions', { Authorization: 'Bearer ' + env.NVIDIA_KEY },
-      chat(system, user, env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct'));
+      chat(system, user, model));
     return d.choices?.[0]?.message?.content;
   }
 };
