@@ -86,7 +86,7 @@ details summary { cursor: pointer; color: var(--accent); font-size: .9rem; margi
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { padding: 3px 10px; border-radius: 99px; font-size: .82rem; background: var(--ok); color: var(--ok-t); }
 #missing .chip { background: var(--gap); color: var(--gap-t); }
-#warnings .chip { background: #fde8b0; color: var(--warn-t); }
+#warnings .chip, #dropped .chip { background: #fde8b0; color: var(--warn-t); }
 .warn { background: var(--warn); margin-top: 16px; }
 .warn p { margin: 0 0 8px; font-size: .9rem; }
 

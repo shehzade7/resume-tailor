@@ -271,9 +271,14 @@ STRICT RULES:
 - You MAY reword, reorder and use the job description's vocabulary only where the original resume already shows the same thing (e.g. "stock" -> "inventory").
 - If a job keyword has no evidence in the resume, do NOT add it; list it in "gaps".
 - Keep every role, employer, date and education entry from the original.
+- KEEP every tool, software, system, transaction code, certification and abbreviation from the original (e.g. Tally, Excel, MS Office, GRN, MIN). When the original gives a full form and an abbreviation, keep both, e.g. "Goods Receipt Notes (GRN)".
+- Keep the candidate's location and headline in "contact".
+- Do NOT inflate seniority or role: never add words like "expert", "expertise", "consultant", "lead" or "senior" unless the original uses them. Describe the same level of work honestly (e.g. "hands-on", "end user").
+- Do not drop achievements or bullets that are relevant to the job. Merge similar ones instead of deleting.
+- Use plain characters only: normal hyphen "-", no special symbols or emojis.
 - Write the summary in 3-4 lines, focused on the target job, using only resume facts.
 - Order competencies and bullets so the most job-relevant come first. Each bullet gets a short bold label (2-4 words) and starts with an action verb.
-- Keep it to one A4 page: at most 6 bullets per role.
+- Keep it to one A4 page: at most 7 bullets per role.
 Return ONLY valid JSON in this exact shape:
 {"name":"","contact":"","summary":"","competencies":[{"label":"","text":""}],"experience":[{"title":"","company":"","location":"","dates":"","bullets":[{"label":"","text":""}]}],"education":[""],"other":[{"heading":"","items":[""]}],"additional":[""],"gaps":[""]}`;
 
@@ -323,14 +328,16 @@ async function callAI(jd, resume, kws, matchedTerms, missingTerms) {
     }
   }
   if (!j) throw new Error('All AI options failed: ' + errors.join('; ') + '. Try again or use Keyword mode.');
-  const lab = (x) => (typeof x === 'string' ? splitLabel(x) : { label: x.label || '', text: x.text || '' });
+  // Plain characters only, so every ATS reads the text the same way.
+  const cl = (s) => String(s ?? '').replace(/[‐‑‒−]/g, '-').replace(/[  ]/g, ' ').trim();
+  const lab = (x) => (typeof x === 'string' ? splitLabel(cl(x)) : { label: cl(x.label), text: cl(x.text) });
   return {
-    name: j.name || '', contact: j.contact || '', summary: j.summary || '',
+    name: cl(j.name), contact: cl(j.contact), summary: cl(j.summary),
     skills: (j.competencies || []).map(lab),
-    roles: (j.experience || []).map((r) => ({ title: r.title || '', org: [r.company, r.location].filter(Boolean).join(' | '), dates: r.dates || '', bullets: (r.bullets || []).map(lab) })),
-    education: (j.education || []).map(String),
-    extras: (j.other || []).filter((o) => o.heading && o.items?.length),
-    additional: (j.additional || []).map(String),
+    roles: (j.experience || []).map((r) => ({ title: cl(r.title), org: [r.company, r.location].filter(Boolean).map(cl).join(' | '), dates: cl(r.dates), bullets: (r.bullets || []).map(lab) })),
+    education: (j.education || []).map(cl),
+    extras: (j.other || []).filter((o) => o.heading && o.items?.length).map((o) => ({ heading: cl(o.heading), items: o.items.map(cl) })),
+    additional: (j.additional || []).map(cl),
     aiGaps: j.gaps || [],
     usedBy: used
   };
@@ -348,7 +355,29 @@ function checkInvented(orig, T, kws) {
     const missing = tokens(part).map(stem).filter((t) => !STOP.has(t) && !oHay.includes(' ' + t + ' '));
     if (missing.length) flags.add(part);
   }
+  // Words that overstate seniority.
+  for (const w of ['expert', 'expertise', 'consultant', 'consulting', 'senior', 'lead', 'leader', 'specialist', 'head', 'manager', 'advanced', 'extensive']) {
+    if (hasPhrase(tHay, norm(w)) && !hasPhrase(oHay, norm(w))) flags.add(w);
+  }
   return [...flags];
+}
+
+// Tools, codes and abbreviations from the original that the new version lost.
+function checkDropped(orig, T) {
+  const tHay = ' ' + norm(resumeText(T)) + ' ', oHay = ' ' + norm(orig) + ' ';
+  const out = new Map();
+  const TOOLS = ['Tally', 'MS Excel', 'Excel', 'Microsoft Excel', 'MS Office', 'Power BI', 'VLOOKUP', 'Pivot Table', 'SAP S/4HANA', 'S/4HANA', 'SAP ECC', 'SAP MM', 'SAP WM', 'SAP EWM', 'Oracle', 'Power Apps', 'Python', 'SQL', 'AutoCAD'];
+  for (const d of TOOLS) if (hasPhrase(oHay, norm(d)) && !hasPhrase(tHay, norm(d))) out.set(norm(d), d);
+  // Abbreviations and codes (GRN, MIN, MIGO...), ignoring all-caps lines (names and headings).
+  for (const line of orig.split('\n')) {
+    if (!/[a-z]/.test(line)) continue;
+    for (const a of line.match(/\b[A-Z][A-Z0-9&]{1,5}\b(?!\/)/g) || []) {
+      if (!ACR_BLACK.has(a) && !hasPhrase(tHay, norm(a))) out.set(norm(a), a);
+    }
+  }
+  // Skip parts of longer terms already listed (e.g. "Excel" when "MS Excel" is listed).
+  const keys = [...out.keys()];
+  return [...out.entries()].filter(([k]) => !keys.some((o) => o !== k && (' ' + o + ' ').includes(' ' + k + ' '))).map(([, v]) => v);
 }
 
 // ---------- rendering ----------
@@ -600,6 +629,15 @@ async function run() {
     if (isAI()) {
       saveSettings();
       T = await callAI(jd, resume, kws, matched.map((k) => k.term), missing.map((k) => k.term));
+      // Always keep the original name, headline, location and contact details.
+      if (R.name) T.name = R.name;
+      if (R.contact) T.contact = R.contact;
+      // Remove "Expert"/"Expertise" from bold labels when the original never claims it.
+      if (!/\bexpert/i.test(resume)) {
+        const fix = (b) => ({ ...b, label: b.label.replace(/\s*\bexpert(ise)?\b/gi, '').trim() });
+        T.skills = T.skills.map(fix);
+        T.roles.forEach((r) => { r.bullets = r.bullets.map(fix); });
+      }
       warnings = checkInvented(resume, T, kws);
     } else {
       T = tailorKeyword(R, kws);
@@ -614,6 +652,9 @@ async function run() {
     chips($('missing'), kws.filter((k) => !matchInfo(k, tHay)).map((k) => k.term));
     $('warnBox').classList.toggle('hidden', !warnings.length);
     chips($('warnings'), warnings);
+    const dropped = checkDropped(resume, T);
+    $('droppedBox').classList.toggle('hidden', !dropped.length);
+    chips($('dropped'), dropped);
     $('preview').innerHTML = renderResume(T);
     current = T;
     $('results').classList.remove('hidden');
