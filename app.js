@@ -68,6 +68,8 @@ function matchInfo(kw, hay) { // hay = ' ' + norm(text) + ' '
 
 // ---------- keyword extraction ----------
 function extractKeywords(jd) {
+  // Text copied from PDFs often glues words together ("ModuleMaterial"), so split them.
+  jd = jd.replace(/([a-z])([A-Z][a-z])/g, '$1 $2');
   const found = new Map();
   const add = (term, w) => {
     term = term.trim().replace(/^[^A-Za-z0-9]+|[^A-Za-z0-9+#]+$/g, '');
@@ -86,21 +88,32 @@ function extractKeywords(jd) {
       add(m ? m[0] : d, 3);
     }
   }
-  for (const a of jd.match(/\b[A-Z][A-Z0-9&\/]{1,9}\b/g) || []) if (!ACR_BLACK.has(a)) add(a, 2);
+  for (const a of jd.match(/\b[A-Z][A-Z0-9&\/]{1,9}\b/g) || []) {
+    // "CPIM/CSCP" is two keywords; "S/4HANA" is one.
+    const parts = /\/[A-Z]{2}/.test(a) ? a.split('/') : [a];
+    for (const p of parts) if (p.length > 1 && !ACR_BLACK.has(p)) add(p, 2);
+  }
   const titleLine = ' ' + norm((jd.match(/title\s*:\s*(.+)/i) || [])[1] || jd.split('\n')[0]) + ' ';
-  const capsRe =/\b[A-Z][a-zA-Z]+(?:\s+(?:&\s+)?[A-Z][a-zA-Z]+){1,3}\b/g;
+  // Capitalised phrases on one line only ("Inventory Control"), never across line breaks.
+  const capsRe = /\b[A-Z][a-zA-Z]+(?:[ \t]+(?:&[ \t]+)?[A-Z][a-zA-Z]+){1,3}\b/g;
   let cm;
   while ((cm = capsRe.exec(jd))) {
     let p = cm[0];
     // At the start of a line or sentence the first word is usually a verb ("Handle Goods Receipt").
     if (/(^|[\n.:;•*\-–]\s*)$/.test(jd.slice(Math.max(0, cm.index - 3), cm.index)) || cm.index === 0) p = p.replace(/^\S+\s+/, '');
-    if (p.includes(' ') && !hasPhrase(titleLine, norm(p)) && !STOP.has(p.split(/\s+/)[0].toLowerCase())) add(p, 2);
+    const pw = p.split(/\s+/);
+    // Skip runs of acronyms ("MM SAP MM"); each acronym is already picked up on its own.
+    if (pw.some((w) => w.length > 1 && w === w.toUpperCase()) || new Set(pw).size < pw.length) continue;
+    if (p.includes(' ') && !hasPhrase(titleLine, norm(p)) && !STOP.has(pw[0].toLowerCase())) add(p, 2);
   }
   const words = tokens(jd), count = {};
-  for (let i = 0; i < words.length - 1; i++) {
-    const a = words[i], b = words[i + 1];
-    if (STOP.has(a) || STOP.has(b) || a.length < 3 || b.length < 3 || /^\d+$/.test(a + b)) continue;
-    const k = a + ' ' + b; count[k] = (count[k] || 0) + 1;
+  for (const line of jd.split(/\n|[.;•]/)) {
+    const lw = tokens(line);
+    for (let i = 0; i < lw.length - 1; i++) {
+      const a = lw[i], b = lw[i + 1];
+      if (STOP.has(a) || STOP.has(b) || a.length < 3 || b.length < 3 || /^\d+$/.test(a + b)) continue;
+      const k = a + ' ' + b; count[k] = (count[k] || 0) + 1;
+    }
   }
   for (const [k, c] of Object.entries(count)) if (c >= 2) add(k, 1);
   const uni = {};
@@ -608,7 +621,65 @@ async function loadResumeFile(file) {
 }
 
 // ---------- main ----------
-let current = null;
+let current = null, state = null;
+
+// ---------- certificates and user-confirmed additions ----------
+const CERT_RE = /\b(CPIM|CSCP|CSCM|CLTD|CPSM|CIPS|APICS|PMP|CAPM|PRINCE2|ITIL|CFA|ACCA|CMA|CPA|CSSGB|CSSBB|NEBOSH|IOSH)\b|six\s+sigma(?:\s+(?:green|black|yellow)\s+belt)?|\b(?:green|black|yellow)\s+belt\b|SAP\s+(?:certified|certification)(?:\s+(?!(?:is|are|a|an|the|and|or|in|of|for|with|preferred|plus|required|desirable|will|be|would|an?)\b)[a-zA-Z]{2,}){0,3}|ISO\s?\d{4,5}(?:\s+(?:lead\s+)?auditor)?/gi;
+const isCertTerm = (t) => new RegExp(CERT_RE.source, 'i').test(t);
+function findCerts(jd) {
+  const out = new Map();
+  for (const m of jd.match(CERT_RE) || []) out.set(norm(m), m.replace(/\s+/g, ' ').trim());
+  return [...out.values()];
+}
+// picks: term -> 'have' | 'progress' (certificates can be in progress).
+function applyPicks(base, picks) {
+  const T = JSON.parse(JSON.stringify(base));
+  const skills = [], certs = [];
+  for (const [term, how] of picks) {
+    if (isCertTerm(term) || state.certs.includes(term)) certs.push(how === 'progress' ? term + ' (in progress)' : term);
+    else skills.push(term);
+  }
+  if (skills.length) T.skills.push({ label: 'Additional Skills', text: skills.join(', ') });
+  if (certs.length) {
+    const sec = T.extras.find((e) => /certif/i.test(e.heading));
+    if (sec) sec.items.push(certs.join(', '));
+    else T.extras.push({ heading: 'Certifications', items: [certs.join(', ')] });
+  }
+  return T;
+}
+function pickChips(el, arr, kind) {
+  el.innerHTML = arr.length ? arr.map((x) => {
+    const how = state.picks.get(x);
+    const label = how === 'progress' ? '◐ ' + x + ' (in progress)' : how ? '✓ ' + x : '+ ' + x;
+    return `<button type="button" class="chip pick${how ? ' on' : ''}" data-kind="${kind}" data-term="${esc(x)}">${esc(label)}</button>`;
+  }).join('') : '<span class="hint">None</span>';
+}
+function refresh() {
+  const { kws } = state;
+  const T = applyPicks(state.base, state.picks);
+  const hay = ' ' + norm(resumeText(T)) + ' ';
+  const after = kws.filter((k) => matchInfo(k, hay));
+  const pct = (n) => (kws.length ? Math.round((n / kws.length) * 100) : 0);
+  $('scoreBefore').textContent = pct(state.before);
+  $('scoreAfter').textContent = pct(after.length);
+  $('ring').style.setProperty('--p', pct(after.length));
+  chips($('matched'), after.map((k) => k.term));
+  pickChips($('missing'), state.gaps, 'skill');
+  pickChips($('certs'), state.certs, 'cert');
+  $('certBox').classList.toggle('hidden', !state.certs.length);
+  $('preview').innerHTML = renderResume(T);
+  current = T;
+}
+function togglePick(e) {
+  const b = e.target.closest('button.pick');
+  if (!b || !state) return;
+  const term = b.dataset.term, now = state.picks.get(term);
+  // Skills: off -> have -> off. Certificates: off -> have -> in progress -> off.
+  const next = b.dataset.kind === 'cert' ? (now === undefined ? 'have' : now === 'have' ? 'progress' : null) : (now ? null : 'have');
+  if (next) state.picks.set(term, next); else state.picks.delete(term);
+  refresh();
+}
+
 function setStatus(msg, err, busy) {
   $('status').textContent = msg;
   $('status').classList.toggle('error', !!err);
@@ -642,21 +713,23 @@ async function run() {
     } else {
       T = tailorKeyword(R, kws);
     }
-    const tHay = ' ' + norm(resumeText(T)) + ' ';
-    const after = kws.filter((k) => matchInfo(k, tHay));
-    const pct = (n) => (kws.length ? Math.round((n / kws.length) * 100) : 0);
-    $('scoreBefore').textContent = pct(matched.length);
-    $('scoreAfter').textContent = pct(after.length);
-    $('ring').style.setProperty('--p', pct(after.length));
-    chips($('matched'), after.map((k) => k.term));
-    chips($('missing'), kws.filter((k) => !matchInfo(k, tHay)).map((k) => k.term));
     $('warnBox').classList.toggle('hidden', !warnings.length);
     chips($('warnings'), warnings);
     const dropped = checkDropped(resume, T);
     $('droppedBox').classList.toggle('hidden', !dropped.length);
     chips($('dropped'), dropped);
-    $('preview').innerHTML = renderResume(T);
-    current = T;
+    // Certificates the job asks for (found in the JD text), plus any cert-like keywords.
+    const baseHay = ' ' + norm(resumeText(T)) + ' ';
+    // Drop entries that are just part of a longer one ("Sigma Green Belt" inside "Six Sigma Green Belt").
+    const inside = (x, list) => list.some((o) => o !== x && (' ' + norm(o) + ' ').includes(' ' + norm(x) + ' '));
+    let certs = [...new Set([...findCerts(jd), ...kws.filter((k) => isCertTerm(k.term)).map((k) => k.term)])];
+    certs = certs.filter((c) => !inside(c, certs) && !hasPhrase(baseHay, norm(c)));
+    const certN = new Set(certs.map(norm));
+    state = {
+      kws, base: T, before: matched.length, picks: new Map(), certs,
+      gaps: kws.filter((k) => !matchInfo(k, baseHay) && !certN.has(k.n) && !isCertTerm(k.term) && !inside(k.term, certs)).map((k) => k.term)
+    };
+    refresh();
     $('results').classList.remove('hidden');
     $('previewWrap').classList.remove('hidden');
     setStatus(R.roles.length || T.roles.length ? (T.usedBy ? `Done with ${T.usedBy}. ` : 'Done. ') + 'Review the preview below before downloading.' : 'Done, but no experience section was found. Put headings like EXPERIENCE on their own line.');
@@ -730,6 +803,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // Stop the browser opening a file dropped slightly outside the box.
   ['dragover', 'drop'].forEach((t) => window.addEventListener(t, (e) => e.preventDefault()));
   $('tailorBtn').addEventListener('click', run);
+  $('missing').addEventListener('click', togglePick);
+  $('certs').addEventListener('click', togglePick);
   $('sampleBtn').addEventListener('click', () => {
     $('jd').value = SAMPLE_JD; $('resume').value = SAMPLE_RESUME;
     showFileCard('Sample resume (Ravi Kumar)', SAMPLE_RESUME);

@@ -86,6 +86,11 @@ details summary { cursor: pointer; color: var(--accent); font-size: .9rem; margi
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { padding: 3px 10px; border-radius: 99px; font-size: .82rem; background: var(--ok); color: var(--ok-t); }
 #missing .chip { background: var(--gap); color: var(--gap-t); }
+button.chip { border: 1px solid transparent; font: inherit; font-size: .82rem; cursor: pointer; transition: .12s; }
+button.chip:hover { border-color: currentColor; }
+#certs .chip { background: var(--accent-soft); color: var(--accent); }
+#missing .chip.on, #certs .chip.on { background: var(--ok); color: var(--ok-t); }
+.certCard { margin-top: 16px; }
 #warnings .chip, #dropped .chip { background: #fde8b0; color: var(--warn-t); }
 .warn { background: var(--warn); margin-top: 16px; }
 .warn p { margin: 0 0 8px; font-size: .9rem; }
