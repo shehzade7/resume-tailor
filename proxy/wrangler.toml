@@ -1,0 +1,7 @@
+name = "resume-tailor-ai"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+# Keep variables and secrets set in the Cloudflare dashboard.
+keep_vars = true
+preview_urls = false
