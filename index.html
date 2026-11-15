@@ -20,36 +20,33 @@
       <label for="jd">Job description</label>
       <textarea id="jd" rows="14" placeholder="Paste the full job description here..."></textarea>
     </div>
-    <div class="field">
-      <label for="resume">Your current resume (plain text)</label>
-      <textarea id="resume" rows="14" placeholder="Paste your resume text here. Keep headings like SUMMARY, SKILLS, EXPERIENCE, EDUCATION on their own lines."></textarea>
+    <div class="field" id="resumeField">
+      <div class="labelrow">
+        <label for="resume">Your current resume</label>
+        <button type="button" id="uploadBtn" class="ghost small">Upload file</button>
+        <input type="file" id="fileInput" accept=".pdf,.docx,.txt" hidden>
+      </div>
+      <textarea id="resume" rows="14" placeholder="Drop a PDF, Word (.docx) or .txt resume here, click Upload file, or paste the text. Keep headings like SUMMARY, SKILLS, EXPERIENCE, EDUCATION on their own lines."></textarea>
+      <div class="dropHint">Drop the resume file here</div>
     </div>
   </section>
 
   <section class="settings">
     <div class="mode">
       <label><input type="radio" name="mode" value="keyword" checked> Keyword mode <small>(free, no key, works offline)</small></label>
-      <label><input type="radio" name="mode" value="ai"> AI rewrite <small>(needs a free API key)</small></label>
+      <label><input type="radio" name="mode" value="ai"> AI rewrite <small>(Groq → Gemini → NVIDIA, switches automatically on errors)</small></label>
     </div>
     <div id="aiSettings" class="ai hidden">
-      <div class="row">
-        <label>Provider
-          <select id="provider">
-            <option value="groq">Groq (free key: console.groq.com)</option>
-            <option value="gemini">Google Gemini (free key: aistudio.google.com)</option>
-            <option value="nvidia">NVIDIA via proxy (free key: build.nvidia.com)</option>
-          </select>
-        </label>
-        <label>Model <input id="model" type="text"></label>
-      </div>
-      <div class="row">
-        <label class="grow">API key <input id="apiKey" type="password" autocomplete="off" placeholder="Paste your key"></label>
+      <p id="aiServerStatus" class="hint"></p>
+      <details id="ownKeys">
+        <summary>Use your own API keys (optional)</summary>
+        <div class="row">
+          <label>Groq key <input id="groqKey" type="password" autocomplete="off" placeholder="gsk_..."></label>
+          <label>Gemini key <input id="geminiKey" type="password" autocomplete="off" placeholder="AIza..."></label>
+        </div>
         <label class="check"><input id="rememberKey" type="checkbox"> Remember on this device</label>
-      </div>
-      <div class="row hidden" id="proxyRow">
-        <label class="grow">Proxy URL <input id="proxyUrl" type="url" placeholder="https://your-worker.your-name.workers.dev"></label>
-      </div>
-      <p class="hint">Your key goes only from this browser to the provider. It's never sent anywhere else.</p>
+        <p class="hint">Your own keys are tried first, then the shared server. They go only from this browser to the provider.</p>
+      </details>
     </div>
     <div class="actions">
       <button id="tailorBtn" class="primary">Tailor my resume</button>

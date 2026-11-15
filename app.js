@@ -47,7 +47,7 @@ function stem(t) {
   return t;
 }
 function tokens(s) {
-  return String(s).replace(/\b([A-Z]{2,5})s\b/g, '$1').toLowerCase().replace(/\//g, '').replace(/[^a-z0-9+#]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  return String(s).replace(/\b([A-Z]{2,5})s\b/g, '$1').toLowerCase().replace(/([a-z])\/(\d)/g, '$1$2').replace(/\//g, ' ').replace(/[^a-z0-9+#]+/g, ' ').trim().split(/\s+/).filter(Boolean);
 }
 const norm = (s) => tokens(s).map(stem).join(' ');
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -262,11 +262,9 @@ function resumeText(R) {
 }
 
 // ---------- AI mode ----------
-const PROVIDERS = {
-  groq: { model: 'llama-3.3-70b-versatile' },
-  gemini: { model: 'gemini-2.5-flash' },
-  nvidia: { model: 'meta/llama-3.3-70b-instruct' }
-};
+// Shared AI server (Cloudflare Worker holding the keys). Paste its address here.
+const WORKER_URL = '';
+const TIMEOUT_MS = 45000;
 const SYSTEM_PROMPT = `You are an expert resume writer who tailors resumes for ATS systems.
 STRICT RULES:
 - Use ONLY facts from the ORIGINAL RESUME. Never invent employers, job titles, dates, numbers, percentages, tools, software, certifications, degrees or responsibilities.
@@ -279,37 +277,52 @@ STRICT RULES:
 Return ONLY valid JSON in this exact shape:
 {"name":"","contact":"","summary":"","competencies":[{"label":"","text":""}],"experience":[{"title":"","company":"","location":"","dates":"","bullets":[{"label":"","text":""}]}],"education":[""],"other":[{"heading":"","items":[""]}],"additional":[""],"gaps":[""]}`;
 
+async function postJSON(url, headers, payload, ms) {
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(payload), signal: AbortSignal.timeout(ms) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error?.message || data.error || data.detail || 'HTTP ' + res.status);
+  return data;
+}
+const ATTEMPTS = {
+  groq: { name: 'Groq', key: () => $('groqKey').value.trim(), async run(user) {
+    const d = await postJSON('https://api.groq.com/openai/v1/chat/completions', { Authorization: 'Bearer ' + this.key() },
+      { model: 'llama-3.3-70b-versatile', temperature: 0.2, max_tokens: 4096, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: user }] }, TIMEOUT_MS);
+    return d.choices?.[0]?.message?.content || '';
+  } },
+  gemini: { name: 'Gemini', key: () => $('geminiKey').value.trim(), async run(user) {
+    const d = await postJSON('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', { 'x-goog-api-key': this.key() },
+      { systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] }, contents: [{ role: 'user', parts: [{ text: user }] }], generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } }, TIMEOUT_MS);
+    return (d.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
+  } },
+  server: { name: 'shared AI server', key: () => WORKER_URL, async run(user) {
+    // The server itself switches Groq -> Gemini -> NVIDIA, so allow time for all three.
+    const d = await postJSON(WORKER_URL, {}, { system: SYSTEM_PROMPT, user }, 130000);
+    this.used = d.provider;
+    return d.text || '';
+  } }
+};
+
 async function callAI(jd, resume, kws, matchedTerms, missingTerms) {
-  const provider = $('provider').value, model = $('model').value.trim() || PROVIDERS[provider].model;
-  const key = $('apiKey').value.trim();
-  if (!key) throw new Error('Please paste your API key first.');
   const user = `JOB DESCRIPTION:\n${jd}\n\nORIGINAL RESUME:\n${resume}\n\nJob keywords already supported by the resume (use the job's wording for these): ${matchedTerms.join(', ') || 'none'}\nJob keywords NOT in the resume (do not add; list as gaps): ${missingTerms.join(', ') || 'none'}`;
-  let res, data, text;
-  if (provider === 'gemini') {
-    res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({ systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] }, contents: [{ role: 'user', parts: [{ text: user }] }], generationConfig: { temperature: 0.2, responseMimeType: 'application/json' } })
-    });
-    data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error?.message || 'Gemini error ' + res.status);
-    text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('');
-  } else {
-    let url = 'https://api.groq.com/openai/v1/chat/completions';
-    if (provider === 'nvidia') {
-      const p = $('proxyUrl').value.trim().replace(/\/+$/, '');
-      if (!p) throw new Error('NVIDIA needs your proxy URL (see the README to set one up for free).');
-      url = p + '/v1/chat/completions';
+  const order = ['groq', 'gemini', 'server'].filter((k) => ATTEMPTS[k].key());
+  if (!order.length) throw new Error('AI is not set up yet. Add your own key under "Use your own API keys", or use Keyword mode.');
+  const errors = [];
+  let j = null, used = '';
+  for (const k of order) {
+    const a = ATTEMPTS[k];
+    setStatus(errors.length ? `${errors[errors.length - 1]}. Trying ${a.name}...` : `Rewriting with ${a.name}...`);
+    try {
+      const text = await a.run(user);
+      const s = text.indexOf('{'), e = text.lastIndexOf('}');
+      if (s < 0 || e < 0) throw new Error('no resume in reply');
+      j = JSON.parse(text.slice(s, e + 1));
+      used = k === 'server' && a.used ? titleCase(a.used) + ' (shared server)' : a.name;
+      break;
+    } catch (err) {
+      errors.push(`${a.name} failed (${err.name === 'TimeoutError' ? 'timed out' : err.message})`);
     }
-    const body = { model, temperature: 0.2, max_tokens: 4096, messages: [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: user }] };
-    if (provider === 'groq') body.response_format = { type: 'json_object' };
-    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + key }, body: JSON.stringify(body) });
-    data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error?.message || data.detail || data.title || 'API error ' + res.status);
-    text = data.choices?.[0]?.message?.content || '';
   }
-  const s = text.indexOf('{'), e = text.lastIndexOf('}');
-  if (s < 0 || e < 0) throw new Error('The AI did not return a resume. Try again.');
-  const j = JSON.parse(text.slice(s, e + 1));
+  if (!j) throw new Error('All AI options failed: ' + errors.join('; ') + '. Try again or use Keyword mode.');
   const lab = (x) => (typeof x === 'string' ? splitLabel(x) : { label: x.label || '', text: x.text || '' });
   return {
     name: j.name || '', contact: j.contact || '', summary: j.summary || '',
@@ -318,7 +331,8 @@ async function callAI(jd, resume, kws, matchedTerms, missingTerms) {
     education: (j.education || []).map(String),
     extras: (j.other || []).filter((o) => o.heading && o.items?.length),
     additional: (j.additional || []).map(String),
-    aiGaps: j.gaps || []
+    aiGaps: j.gaps || [],
+    usedBy: used
   };
 }
 
@@ -408,29 +422,101 @@ const store = {
   set(k, v) { try { v == null ? localStorage.removeItem('rt_' + k) : localStorage.setItem('rt_' + k, v); } catch { /* storage blocked */ } }
 };
 function loadSettings() {
-  const p = store.get('provider'); if (p && PROVIDERS[p]) $('provider').value = p;
-  $('proxyUrl').value = store.get('proxy') || '';
   $('rememberKey').checked = store.get('remember') === '1';
-  if (store.get('mode') === 'ai') document.querySelector('input[value=ai]').checked = true;
-  providerChanged();
+  if ($('rememberKey').checked) { $('groqKey').value = store.get('key_groq') || ''; $('geminiKey').value = store.get('key_gemini') || ''; }
+  if ($('groqKey').value || $('geminiKey').value) $('ownKeys').open = true;
+  if (store.get('mode') !== 'keyword' && WORKER_URL || store.get('mode') === 'ai') document.querySelector('input[value=ai]').checked = true;
+  $('aiServerStatus').textContent = WORKER_URL
+    ? 'Shared AI is ready. No key needed.'
+    : 'Shared AI server is not connected yet. Add your own key below, or use Keyword mode.';
   modeChanged();
 }
-function providerChanged() {
-  const p = $('provider').value;
-  $('model').value = store.get('model_' + p) || PROVIDERS[p].model;
-  $('apiKey').value = $('rememberKey').checked ? store.get('key_' + p) || '' : '';
-  $('proxyRow').classList.toggle('hidden', p !== 'nvidia');
-  store.set('provider', p);
-}
 function saveSettings() {
-  const p = $('provider').value;
-  store.set('model_' + p, $('model').value.trim() || null);
-  store.set('proxy', $('proxyUrl').value.trim() || null);
-  store.set('remember', $('rememberKey').checked ? '1' : null);
-  store.set('key_' + p, $('rememberKey').checked ? $('apiKey').value.trim() || null : null);
+  const r = $('rememberKey').checked;
+  store.set('remember', r ? '1' : null);
+  store.set('key_groq', r ? $('groqKey').value.trim() || null : null);
+  store.set('key_gemini', r ? $('geminiKey').value.trim() || null : null);
 }
 const isAI = () => document.querySelector('input[name=mode]:checked').value === 'ai';
 function modeChanged() { $('aiSettings').classList.toggle('hidden', !isAI()); store.set('mode', isAI() ? 'ai' : 'keyword'); }
+
+// ---------- resume file upload (read in the browser, never uploaded) ----------
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    if (document.querySelector(`script[src="${src}"]`)) return ok();
+    const s = document.createElement('script'); s.src = src; s.onload = ok;
+    s.onerror = () => fail(new Error('Could not load the file reader. Check your internet connection.'));
+    document.head.appendChild(s);
+  });
+}
+const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+async function pdfToText(buf) {
+  await loadScript(PDFJS + 'pdf.min.js');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js';
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const out = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const items = (await (await pdf.getPage(i)).getTextContent()).items;
+    // Group text pieces into lines by their vertical position.
+    const lines = [];
+    for (const it of items) {
+      if (!it.str) continue;
+      const y = it.transform[5], x = it.transform[4];
+      let line = lines.find((l) => Math.abs(l.y - y) < 3);
+      if (!line) { line = { y, parts: [] }; lines.push(line); }
+      line.parts.push({ x, s: it.str, w: it.width });
+    }
+    lines.sort((a, b) => b.y - a.y);
+    for (const l of lines) {
+      l.parts.sort((a, b) => a.x - b.x);
+      let txt = '', end = null;
+      for (const p of l.parts) { txt += (end !== null && p.x - end > 1 && !txt.endsWith(' ') && !p.s.startsWith(' ') ? ' ' : '') + p.s; end = p.x + p.w; }
+      l.text = txt.replace(/\s+/g, ' ').trim();
+      l.right = end;
+    }
+    // Re-join lines that were wrapped because they reached the right margin.
+    const maxRight = Math.max(...lines.map((l) => l.right || 0));
+    let prev = null;
+    for (const l of lines) {
+      if (!l.text) continue;
+      const wrapped = prev && prev.right > maxRight * 0.88 && !BULLET_RE.test(l.text) && !headingOf(l.text) && !DATE_RE.test(l.text);
+      if (wrapped) out[out.length - 1] += ' ' + l.text; else out.push(l.text);
+      prev = l;
+    }
+    out.push('');
+  }
+  return out.join('\n');
+}
+async function docxToText(buf) {
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js');
+  const { value } = await mammoth.convertToHtml({ arrayBuffer: buf });
+  const doc = new DOMParser().parseFromString(value, 'text/html');
+  const out = [];
+  doc.body.querySelectorAll('p, li, h1, h2, h3, h4, h5, h6, td').forEach((el) => {
+    if (el.tagName === 'TD' && el.querySelector('p, li')) return;
+    if (el.closest('li') && el.tagName !== 'LI') return;
+    const t = el.textContent.replace(/\s+/g, ' ').trim();
+    if (t) out.push(el.tagName === 'LI' ? '• ' + t : t);
+  });
+  return out.join('\n');
+}
+async function loadResumeFile(file) {
+  const name = file.name.toLowerCase();
+  try {
+    setStatus('Reading ' + file.name + '...');
+    let text;
+    if (name.endsWith('.pdf')) text = await pdfToText(await file.arrayBuffer());
+    else if (name.endsWith('.docx')) text = await docxToText(await file.arrayBuffer());
+    else if (name.endsWith('.txt')) text = await file.text();
+    else throw new Error('Please use a PDF, Word (.docx) or .txt file. For old .doc files, save as .docx first.');
+    text = text.replace(/\n{3,}/g, '\n\n').trim();
+    if (text.length < 50) throw new Error('No text found in this file (it may be a scanned image). Please paste the text instead.');
+    $('resume').value = text;
+    setStatus('Loaded ' + file.name + '. Check the text, then click "Tailor my resume".');
+  } catch (e) {
+    setStatus(e.message || String(e), true);
+  }
+}
 
 // ---------- main ----------
 let current = null;
@@ -448,7 +534,6 @@ async function run() {
   try {
     if (isAI()) {
       saveSettings();
-      setStatus('Rewriting with AI...');
       T = await callAI(jd, resume, kws, matched.map((k) => k.term), missing.map((k) => k.term));
       warnings = checkInvented(resume, T, kws);
     } else {
@@ -467,7 +552,7 @@ async function run() {
     current = T;
     $('results').classList.remove('hidden');
     $('previewWrap').classList.remove('hidden');
-    setStatus(R.roles.length || T.roles.length ? 'Done. Review the preview below before downloading.' : 'Done, but no experience section was found. Put headings like EXPERIENCE on their own line.');
+    setStatus(R.roles.length || T.roles.length ? (T.usedBy ? `Done with ${T.usedBy}. ` : 'Done. ') + 'Review the preview below before downloading.' : 'Done, but no experience section was found. Put headings like EXPERIENCE on their own line.');
     $('results').scrollIntoView({ behavior: 'smooth' });
   } catch (e) {
     setStatus(e.message || String(e), true);
@@ -518,8 +603,17 @@ Languages: English, Hindi, Telugu`;
 document.addEventListener('DOMContentLoaded', () => {
   loadSettings();
   document.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', modeChanged));
-  $('provider').addEventListener('change', providerChanged);
+  ['rememberKey', 'groqKey', 'geminiKey'].forEach((id) => $(id).addEventListener('input', saveSettings));
   $('rememberKey').addEventListener('change', saveSettings);
+  // Resume upload: button or drag-and-drop.
+  $('uploadBtn').addEventListener('click', () => $('fileInput').click());
+  $('fileInput').addEventListener('change', (e) => { if (e.target.files[0]) loadResumeFile(e.target.files[0]); e.target.value = ''; });
+  const field = $('resumeField');
+  ['dragenter', 'dragover'].forEach((t) => field.addEventListener(t, (e) => { e.preventDefault(); field.classList.add('dragging'); }));
+  ['dragleave', 'drop'].forEach((t) => field.addEventListener(t, (e) => { e.preventDefault(); if (t === 'drop' || !field.contains(e.relatedTarget)) field.classList.remove('dragging'); }));
+  field.addEventListener('drop', (e) => { const f = e.dataTransfer.files[0]; if (f) loadResumeFile(f); });
+  // Stop the browser opening a file dropped slightly outside the box.
+  ['dragover', 'drop'].forEach((t) => window.addEventListener(t, (e) => e.preventDefault()));
   $('tailorBtn').addEventListener('click', run);
   $('sampleBtn').addEventListener('click', () => { $('jd').value = SAMPLE_JD; $('resume').value = SAMPLE_RESUME; setStatus('Sample loaded. Click "Tailor my resume".'); });
   $('pdfBtn').addEventListener('click', () => {
