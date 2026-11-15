@@ -4,40 +4,69 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Resume Tailor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js" defer></script>
 <script src="app.js" defer></script>
 </head>
 <body>
-<header class="topbar no-print">
-  <h1>Resume Tailor</h1>
-  <p>Paste a job description and your resume. Get an ATS-friendly version tailored to the job. Nothing is invented, and gaps are flagged.</p>
+<header class="hero no-print">
+  <div class="wrap">
+    <div class="brand"><span class="logo">RT</span> Resume Tailor</div>
+    <h1>Tailor your resume to any job in seconds</h1>
+    <p>Upload your resume, paste the job description, and get an ATS-friendly version that highlights what the job asks for. Nothing is invented, and gaps are shown honestly.</p>
+  </div>
 </header>
 
-<main class="no-print">
-  <section class="inputs">
-    <div class="field">
-      <label for="jd">Job description</label>
-      <textarea id="jd" rows="14" placeholder="Paste the full job description here..."></textarea>
-    </div>
-    <div class="field" id="resumeField">
-      <div class="labelrow">
-        <label for="resume">Your current resume</label>
-        <button type="button" id="uploadBtn" class="ghost small">Upload file</button>
+<main class="wrap no-print">
+  <div class="steps">
+    <!-- Step 1: resume -->
+    <section class="card step">
+      <div class="stepHead"><span class="num">1</span><h2>Your resume</h2></div>
+      <div id="resumeField">
+        <div id="dropZone" class="drop" tabindex="0" role="button" aria-label="Upload resume">
+          <div class="dropIcon">⬆</div>
+          <div class="dropMain">Drag &amp; drop your resume here</div>
+          <div class="dropSub">PDF, Word (.docx) or .txt · or <span class="link">browse files</span></div>
+        </div>
+        <div id="fileCard" class="fileCard hidden">
+          <div class="fileIcon">📄</div>
+          <div class="fileInfo">
+            <div id="fileName" class="fileName"></div>
+            <div id="fileMeta" class="fileMeta"></div>
+          </div>
+          <div class="fileActions">
+            <button type="button" id="editTextBtn" class="link">Edit text</button>
+            <button type="button" id="replaceBtn" class="link">Replace</button>
+          </div>
+        </div>
+        <button type="button" id="pasteBtn" class="link small">or paste resume text instead</button>
+        <textarea id="resume" class="hidden" rows="12" placeholder="Paste your resume text here. Keep headings like SUMMARY, SKILLS, EXPERIENCE, EDUCATION on their own lines."></textarea>
         <input type="file" id="fileInput" accept=".pdf,.docx,.txt" hidden>
+        <button type="button" id="uploadBtn" hidden></button>
       </div>
-      <textarea id="resume" rows="14" placeholder="Drop a PDF, Word (.docx) or .txt resume here, click Upload file, or paste the text. Keep headings like SUMMARY, SKILLS, EXPERIENCE, EDUCATION on their own lines."></textarea>
-      <div class="dropHint">Drop the resume file here</div>
-    </div>
-  </section>
+    </section>
 
-  <section class="settings">
-    <div class="mode">
-      <label><input type="radio" name="mode" value="keyword" checked> Keyword mode <small>(free, no key, works offline)</small></label>
-      <label><input type="radio" name="mode" value="ai"> AI rewrite <small>(Groq → Gemini → NVIDIA, switches automatically on errors)</small></label>
+    <!-- Step 2: job description -->
+    <section class="card step">
+      <div class="stepHead"><span class="num">2</span><h2>Job description</h2></div>
+      <textarea id="jd" rows="12" placeholder="Paste the full job description here (responsibilities, requirements, skills)..."></textarea>
+    </section>
+  </div>
+
+  <!-- Step 3: tailor -->
+  <section class="card step">
+    <div class="stepHead"><span class="num">3</span><h2>Tailor it</h2></div>
+    <div class="modeRow">
+      <div class="segmented" role="radiogroup">
+        <label><input type="radio" name="mode" value="ai"><span>✨ AI rewrite</span></label>
+        <label><input type="radio" name="mode" value="keyword" checked><span>🔑 Keyword mode</span></label>
+      </div>
+      <p class="hint" id="modeHint"></p>
     </div>
     <div id="aiSettings" class="ai hidden">
-      <p id="aiServerStatus" class="hint"></p>
+      <p id="aiServerStatus" class="pill"></p>
       <details id="ownKeys">
         <summary>Use your own API keys (optional)</summary>
         <div class="row">
@@ -49,40 +78,50 @@
       </details>
     </div>
     <div class="actions">
-      <button id="tailorBtn" class="primary">Tailor my resume</button>
-      <button id="sampleBtn" class="ghost">Load sample</button>
-      <span id="status" class="status"></span>
+      <button id="tailorBtn" class="btn primary big">Tailor my resume</button>
+      <button id="sampleBtn" class="btn ghost">Try a sample</button>
     </div>
+    <p id="status" class="status" role="status"></p>
   </section>
 
+  <!-- Results -->
   <section id="results" class="hidden">
-    <div class="match">
-      <div class="score"><span id="scoreBefore">0</span>% <small>before</small> → <strong><span id="scoreAfter">0</span>%</strong> <small>after</small></div>
-      <div>
-        <h3>Matched keywords</h3>
+    <div class="resultsGrid">
+      <div class="card scoreCard">
+        <div class="ring" id="ring"><div class="ringInner"><span id="scoreAfter">0</span>%</div></div>
+        <div>
+          <h3>ATS keyword match</h3>
+          <p class="hint">Was <strong><span id="scoreBefore">0</span>%</strong> before tailoring</p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>✅ Matched keywords</h3>
         <div id="matched" class="chips"></div>
       </div>
-      <div>
-        <h3>Missing (gaps, not added to your resume)</h3>
+      <div class="card">
+        <h3>⚠️ Gaps (not added)</h3>
         <div id="missing" class="chips"></div>
-        <p class="hint">Only add these if you really have the experience. You can mention them in an interview or a cover letter.</p>
-      </div>
-      <div id="warnBox" class="warn hidden">
-        <h3>Please double-check</h3>
-        <p>These words or numbers appear in the AI version but not in your original resume:</p>
-        <div id="warnings" class="chips"></div>
+        <p class="hint">Only add these if you truly have the experience. You can mention them in an interview or a cover letter.</p>
       </div>
     </div>
-    <div class="actions">
-      <button id="pdfBtn" class="primary">Download PDF</button>
-      <button id="docxBtn" class="primary">Download Word</button>
-      <span class="hint">For PDF, choose "Save as PDF" in the print window.</span>
+    <div id="warnBox" class="card warn hidden">
+      <h3>🔍 Please double-check</h3>
+      <p>These words or numbers appear in the AI version but not in your original resume:</p>
+      <div id="warnings" class="chips"></div>
     </div>
   </section>
 </main>
 
 <div id="previewWrap" class="hidden">
+  <div class="downloadBar no-print">
+    <span class="dlTitle">Your tailored resume</span>
+    <div class="dlBtns">
+      <button id="pdfBtn" class="btn primary">⬇ Download PDF</button>
+      <button id="docxBtn" class="btn ghost">⬇ Download Word</button>
+    </div>
+  </div>
   <article id="preview" class="page"></article>
 </div>
+<footer class="foot no-print">Your resume is processed in your browser. AI mode sends the text only to the AI provider to rewrite it.</footer>
 </body>
 </html>

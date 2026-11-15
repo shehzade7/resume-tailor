@@ -310,7 +310,7 @@ async function callAI(jd, resume, kws, matchedTerms, missingTerms) {
   let j = null, used = '';
   for (const k of order) {
     const a = ATTEMPTS[k];
-    setStatus(errors.length ? `${errors[errors.length - 1]}. Trying ${a.name}...` : `Rewriting with ${a.name}...`);
+    setStatus(errors.length ? `${errors[errors.length - 1]}. Trying ${a.name}...` : `Rewriting with ${a.name === 'shared AI server' ? 'AI' : a.name}...`, false, true);
     try {
       const text = (await a.run(user)).replace(/<think>[\s\S]*?<\/think>/g, '');
       const s = text.indexOf('{'), e = text.lastIndexOf('}');
@@ -378,6 +378,47 @@ function renderResume(T) {
 }
 const chips = (el, arr) => { el.innerHTML = arr.length ? arr.map((x) => `<span class="chip">${esc(x)}</span>`).join('') : '<span class="hint">None</span>'; };
 
+// ---------- PDF export (real text, single column, ATS-friendly) ----------
+async function downloadPdf(T) {
+  const base = 'https://cdnjs.cloudflare.com/ajax/libs/pdfmake/0.2.10/';
+  await loadScript(base + 'pdfmake.min.js');
+  await loadScript(base + 'vfs_fonts.min.js');
+  const rule = { canvas: [{ type: 'line', x1: 0, y1: 0, x2: 515, y2: 0, lineWidth: 0.8 }], margin: [0, 1, 0, 4] };
+  const heading = (t) => [{ text: t.toUpperCase(), style: 'h2' }, rule];
+  const item = (b) => ({ text: [...(b.label ? [{ text: b.label + ': ', bold: true }] : []), b.text], margin: [0, 0, 0, 2] });
+  const list = (arr) => ({ ul: arr.map(item), margin: [0, 0, 0, 4] });
+  const content = [{ text: T.name, style: 'h1' }];
+  if (T.contact) content.push({ text: T.contact, style: 'contact' });
+  if (T.summary) content.push(...heading('Professional Summary'), { text: T.summary, margin: [0, 0, 0, 2] });
+  if (T.skills.length) {
+    content.push(...heading('Core Competencies'));
+    const lab = T.skills.filter((s) => s.label), plain = T.skills.filter((s) => !s.label).map((s) => s.text);
+    if (lab.length) content.push(list(lab));
+    if (plain.length) content.push({ text: plain.join(' | '), margin: [0, 0, 0, 4] });
+  }
+  if (T.roles.length) {
+    content.push(...heading('Professional Experience'));
+    for (const r of T.roles) {
+      content.push({ columns: [{ text: r.title, bold: true, width: '*' }, { text: r.dates, bold: true, width: 'auto', alignment: 'right' }], margin: [0, 4, 0, 0] });
+      if (r.org) content.push({ text: r.org, italics: true });
+      if (r.bullets.length) content.push(list(r.bullets));
+    }
+  }
+  if (T.education.length) content.push(...heading('Education'), list(T.education.map(splitLabel)));
+  for (const e of T.extras) content.push(...heading(e.heading), list(e.items.map(splitLabel)));
+  if (T.additional.length) content.push(...heading('Additional Information'), list(T.additional.map(splitLabel)));
+  pdfMake.createPdf({
+    pageSize: 'A4', pageMargins: [40, 36, 40, 36], content,
+    info: { title: (T.name || 'Resume') + ' - Resume', author: T.name || '' },
+    defaultStyle: { font: 'Roboto', fontSize: 10, lineHeight: 1.15 },
+    styles: {
+      h1: { fontSize: 17, bold: true, alignment: 'center' },
+      contact: { fontSize: 9, alignment: 'center', margin: [0, 2, 0, 6] },
+      h2: { fontSize: 11, bold: true, margin: [0, 8, 0, 0] }
+    }
+  }).download(fileBase(T) + '.pdf');
+}
+
 // ---------- Word export ----------
 async function downloadDocx(T) {
   if (!window.docx) { alert('The Word export library could not load. Check your internet connection and try again.'); return; }
@@ -427,8 +468,9 @@ function loadSettings() {
   if ($('groqKey').value || $('geminiKey').value) $('ownKeys').open = true;
   if (store.get('mode') !== 'keyword' && WORKER_URL || store.get('mode') === 'ai') document.querySelector('input[value=ai]').checked = true;
   $('aiServerStatus').textContent = WORKER_URL
-    ? 'Shared AI is ready. No key needed.'
-    : 'Shared AI server is not connected yet. Add your own key below, or use Keyword mode.';
+    ? '● AI is ready. No key needed.'
+    : '● Shared AI is not connected yet. Add your own key below, or use Keyword mode.';
+  $('aiServerStatus').classList.toggle('off', !WORKER_URL);
   modeChanged();
 }
 function saveSettings() {
@@ -438,7 +480,13 @@ function saveSettings() {
   store.set('key_gemini', r ? $('geminiKey').value.trim() || null : null);
 }
 const isAI = () => document.querySelector('input[name=mode]:checked').value === 'ai';
-function modeChanged() { $('aiSettings').classList.toggle('hidden', !isAI()); store.set('mode', isAI() ? 'ai' : 'keyword'); }
+function modeChanged() {
+  $('aiSettings').classList.toggle('hidden', !isAI());
+  $('modeHint').textContent = isAI()
+    ? 'Rewrites your summary and bullets in the job’s language, using only facts from your resume.'
+    : 'Free and instant. Reorders your skills and bullets around the job’s keywords without rewording.';
+  store.set('mode', isAI() ? 'ai' : 'keyword');
+}
 
 // ---------- resume file upload (read in the browser, never uploaded) ----------
 function loadScript(src) {
@@ -500,10 +548,21 @@ async function docxToText(buf) {
   });
   return out.join('\n');
 }
+function showFileCard(name, text) {
+  const R = parseResume(text);
+  const words = text.split(/\s+/).filter(Boolean).length;
+  $('fileName').textContent = name;
+  $('fileMeta').textContent = `✓ Ready · ${words} words · ${R.roles.length} role${R.roles.length === 1 ? '' : 's'} found`;
+  $('fileCard').classList.remove('hidden');
+  $('dropZone').classList.add('hidden');
+  $('resume').classList.add('hidden');
+  $('pasteBtn').classList.add('hidden');
+  $('editTextBtn').textContent = 'Edit text';
+}
 async function loadResumeFile(file) {
   const name = file.name.toLowerCase();
   try {
-    setStatus('Reading ' + file.name + '...');
+    setStatus('Reading ' + file.name + '...', false, true);
     let text;
     if (name.endsWith('.pdf')) text = await pdfToText(await file.arrayBuffer());
     else if (name.endsWith('.docx')) text = await docxToText(await file.arrayBuffer());
@@ -512,7 +571,8 @@ async function loadResumeFile(file) {
     text = text.replace(/\n{3,}/g, '\n\n').trim();
     if (text.length < 50) throw new Error('No text found in this file (it may be a scanned image). Please paste the text instead.');
     $('resume').value = text;
-    setStatus('Loaded ' + file.name + '. Check the text, then click "Tailor my resume".');
+    showFileCard(file.name, text);
+    setStatus('');
   } catch (e) {
     setStatus(e.message || String(e), true);
   }
@@ -520,11 +580,16 @@ async function loadResumeFile(file) {
 
 // ---------- main ----------
 let current = null;
-function setStatus(msg, err) { $('status').textContent = msg; $('status').classList.toggle('error', !!err); }
+function setStatus(msg, err, busy) {
+  $('status').textContent = msg;
+  $('status').classList.toggle('error', !!err);
+  $('status').classList.toggle('busy', !!busy);
+}
 
 async function run() {
   const jd = $('jd').value.trim(), resume = $('resume').value.trim();
-  if (!jd || !resume) { setStatus('Please paste both the job description and your resume.', true); return; }
+  if (!resume) { setStatus('Please upload your resume first (step 1).', true); return; }
+  if (!jd) { setStatus('Please paste the job description (step 2).', true); $('jd').focus(); return; }
   const kws = extractKeywords(jd);
   const R = parseResume(resume);
   const oHay = ' ' + norm(resume) + ' ';
@@ -544,6 +609,7 @@ async function run() {
     const pct = (n) => (kws.length ? Math.round((n / kws.length) * 100) : 0);
     $('scoreBefore').textContent = pct(matched.length);
     $('scoreAfter').textContent = pct(after.length);
+    $('ring').style.setProperty('--p', pct(after.length));
     chips($('matched'), after.map((k) => k.term));
     chips($('missing'), kws.filter((k) => !matchInfo(k, tHay)).map((k) => k.term));
     $('warnBox').classList.toggle('hidden', !warnings.length);
@@ -606,7 +672,15 @@ document.addEventListener('DOMContentLoaded', () => {
   ['rememberKey', 'groqKey', 'geminiKey'].forEach((id) => $(id).addEventListener('input', saveSettings));
   $('rememberKey').addEventListener('change', saveSettings);
   // Resume upload: button or drag-and-drop.
-  $('uploadBtn').addEventListener('click', () => $('fileInput').click());
+  const pick = () => $('fileInput').click();
+  $('dropZone').addEventListener('click', pick);
+  $('dropZone').addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(); } });
+  $('replaceBtn').addEventListener('click', pick);
+  $('editTextBtn').addEventListener('click', () => {
+    const show = $('resume').classList.toggle('hidden') === false;
+    $('editTextBtn').textContent = show ? 'Hide text' : 'Edit text';
+  });
+  $('pasteBtn').addEventListener('click', () => { $('resume').classList.remove('hidden'); $('resume').focus(); });
   $('fileInput').addEventListener('change', (e) => { if (e.target.files[0]) loadResumeFile(e.target.files[0]); e.target.value = ''; });
   const field = $('resumeField');
   ['dragenter', 'dragover'].forEach((t) => field.addEventListener(t, (e) => { e.preventDefault(); field.classList.add('dragging'); }));
@@ -615,11 +689,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Stop the browser opening a file dropped slightly outside the box.
   ['dragover', 'drop'].forEach((t) => window.addEventListener(t, (e) => e.preventDefault()));
   $('tailorBtn').addEventListener('click', run);
-  $('sampleBtn').addEventListener('click', () => { $('jd').value = SAMPLE_JD; $('resume').value = SAMPLE_RESUME; setStatus('Sample loaded. Click "Tailor my resume".'); });
-  $('pdfBtn').addEventListener('click', () => {
-    if (!current) return;
-    const old = document.title; document.title = fileBase(current);
-    window.print(); document.title = old;
+  $('sampleBtn').addEventListener('click', () => {
+    $('jd').value = SAMPLE_JD; $('resume').value = SAMPLE_RESUME;
+    showFileCard('Sample resume (Ravi Kumar)', SAMPLE_RESUME);
+    setStatus('Sample loaded. Click "Tailor my resume".');
   });
+  $('pdfBtn').addEventListener('click', () => current && downloadPdf(current).catch((e) => setStatus('PDF export failed: ' + e.message, true)));
   $('docxBtn').addEventListener('click', () => current && downloadDocx(current).catch((e) => setStatus('Word export failed: ' + e.message, true)));
 });
