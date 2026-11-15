@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Resume Tailor</title>
+<link rel="stylesheet" href="style.css">
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js" defer></script>
+<script src="app.js" defer></script>
+</head>
+<body>
+<header class="topbar no-print">
+  <h1>Resume Tailor</h1>
+  <p>Paste a job description and your resume. Get an ATS-friendly version tailored to the job. Nothing is invented, and gaps are flagged.</p>
+</header>
+
+<main class="no-print">
+  <section class="inputs">
+    <div class="field">
+      <label for="jd">Job description</label>
+      <textarea id="jd" rows="14" placeholder="Paste the full job description here..."></textarea>
+    </div>
+    <div class="field">
+      <label for="resume">Your current resume (plain text)</label>
+      <textarea id="resume" rows="14" placeholder="Paste your resume text here. Keep headings like SUMMARY, SKILLS, EXPERIENCE, EDUCATION on their own lines."></textarea>
+    </div>
+  </section>
+
+  <section class="settings">
+    <div class="mode">
+      <label><input type="radio" name="mode" value="keyword" checked> Keyword mode <small>(free, no key, works offline)</small></label>
+      <label><input type="radio" name="mode" value="ai"> AI rewrite <small>(needs a free API key)</small></label>
+    </div>
+    <div id="aiSettings" class="ai hidden">
+      <div class="row">
+        <label>Provider
+          <select id="provider">
+            <option value="groq">Groq (free key: console.groq.com)</option>
+            <option value="gemini">Google Gemini (free key: aistudio.google.com)</option>
+            <option value="nvidia">NVIDIA via proxy (free key: build.nvidia.com)</option>
+          </select>
+        </label>
+        <label>Model <input id="model" type="text"></label>
+      </div>
+      <div class="row">
+        <label class="grow">API key <input id="apiKey" type="password" autocomplete="off" placeholder="Paste your key"></label>
+        <label class="check"><input id="rememberKey" type="checkbox"> Remember on this device</label>
+      </div>
+      <div class="row hidden" id="proxyRow">
+        <label class="grow">Proxy URL <input id="proxyUrl" type="url" placeholder="https://your-worker.your-name.workers.dev"></label>
+      </div>
+      <p class="hint">Your key goes only from this browser to the provider. It's never sent anywhere else.</p>
+    </div>
+    <div class="actions">
+      <button id="tailorBtn" class="primary">Tailor my resume</button>
+      <button id="sampleBtn" class="ghost">Load sample</button>
+      <span id="status" class="status"></span>
+    </div>
+  </section>
+
+  <section id="results" class="hidden">
+    <div class="match">
+      <div class="score"><span id="scoreBefore">0</span>% <small>before</small> → <strong><span id="scoreAfter">0</span>%</strong> <small>after</small></div>
+      <div>
+        <h3>Matched keywords</h3>
+        <div id="matched" class="chips"></div>
+      </div>
+      <div>
+        <h3>Missing (gaps, not added to your resume)</h3>
+        <div id="missing" class="chips"></div>
+        <p class="hint">Only add these if you really have the experience. You can mention them in an interview or a cover letter.</p>
+      </div>
+      <div id="warnBox" class="warn hidden">
+        <h3>Please double-check</h3>
+        <p>These words or numbers appear in the AI version but not in your original resume:</p>
+        <div id="warnings" class="chips"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="pdfBtn" class="primary">Download PDF</button>
+      <button id="docxBtn" class="primary">Download Word</button>
+      <span class="hint">For PDF, choose "Save as PDF" in the print window.</span>
+    </div>
+  </section>
+</main>
+
+<div id="previewWrap" class="hidden">
+  <article id="preview" class="page"></article>
+</div>
+</body>
+</html>
