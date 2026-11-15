@@ -631,13 +631,38 @@ function findCerts(jd) {
   for (const m of jd.match(CERT_RE) || []) out.set(norm(m), m.replace(/\s+/g, ' ').trim());
   return [...out.values()];
 }
+// Short forms written in full, so the line matches both versions in an ATS search.
+const FULL = {
+  MM: 'SAP MM (Materials Management)', WM: 'SAP WM (Warehouse Management)', EWM: 'SAP EWM (Extended Warehouse Management)',
+  SD: 'SAP SD (Sales & Distribution)', PP: 'SAP PP (Production Planning)', QM: 'SAP QM (Quality Management)',
+  PM: 'SAP PM (Plant Maintenance)', FI: 'SAP FI (Financial Accounting)', CO: 'SAP CO (Controlling)', FICO: 'SAP FICO (Finance & Controlling)',
+  HR: 'SAP HR (Human Resources)', HCM: 'SAP HCM (Human Capital Management)', CM: 'Compensation Management (CM)',
+  PS: 'SAP PS (Project System)', LE: 'SAP LE (Logistics Execution)', TM: 'SAP TM (Transportation Management)', ARIBA: 'SAP Ariba',
+  'SAP SD': 'SAP SD (Sales & Distribution)', 'SAP PP': 'SAP PP (Production Planning)', 'SAP WM': 'SAP WM (Warehouse Management)',
+  'SAP HR': 'SAP HR (Human Resources)', 'SAP QM': 'SAP QM (Quality Management)', 'SAP PM': 'SAP PM (Plant Maintenance)',
+  'SAP FI': 'SAP FI (Financial Accounting)', 'SAP CO': 'SAP CO (Controlling)', 'SAP EWM': 'SAP EWM (Extended Warehouse Management)',
+  P2P: 'Procure to Pay (P2P)', O2C: 'Order to Cash (O2C)', PR: 'Purchase Requisition (PR)', PO: 'Purchase Order (PO)',
+  GRN: 'Goods Receipt Note (GRN)', GR: 'Goods Receipt (GR)', GI: 'Goods Issue (GI)', MRP: 'Material Requirements Planning (MRP)',
+  UAT: 'User Acceptance Testing (UAT)', SIT: 'System Integration Testing (SIT)', ERP: 'ERP (Enterprise Resource Planning)',
+  FIFO: 'FIFO (First In, First Out)', FEFO: 'FEFO (First Expired, First Out)', STO: 'Stock Transport Order (STO)',
+  RFQ: 'Request for Quotation (RFQ)', SOP: 'Standard Operating Procedures (SOP)', KPI: 'KPI Reporting', MIS: 'MIS Reporting',
+  EHS: 'Environment, Health & Safety (EHS)', QC: 'Quality Control (QC)', BOM: 'Bill of Materials (BOM)', LSMW: 'LSMW (Data Migration)',
+  IDOC: 'IDoc Processing', BAPI: 'BAPI', ABAP: 'SAP ABAP', CPIM: 'CPIM (Certified in Planning and Inventory Management)',
+  CSCP: 'CSCP (Certified Supply Chain Professional)', CLTD: 'CLTD (Certified in Logistics, Transportation and Distribution)',
+  CPSM: 'CPSM (Certified Professional in Supply Management)', CIPS: 'CIPS (Chartered Institute of Procurement & Supply)',
+  PMP: 'PMP (Project Management Professional)', ITIL: 'ITIL Foundation'
+};
+const fullForm = (t) => FULL[t] || FULL[t.toUpperCase()] || t;
+
 // picks: term -> 'have' | 'progress' (certificates can be in progress).
 function applyPicks(base, picks) {
   const T = JSON.parse(JSON.stringify(base));
   const skills = [], certs = [];
   for (const [term, how] of picks) {
-    if (isCertTerm(term) || state.certs.includes(term)) certs.push(how === 'progress' ? term + ' (in progress)' : term);
-    else skills.push(term);
+    // "HR/CM" style picks become separate full names.
+    const parts = /^[A-Z0-9]+(\/[A-Z0-9]+)+$/.test(term) ? term.split('/') : [term];
+    if (isCertTerm(term) || state.certs.includes(term)) certs.push(...parts.map((p) => fullForm(p) + (how === 'progress' ? ' (in progress)' : '')));
+    else skills.push(...parts.map(fullForm));
   }
   if (skills.length) T.skills.push({ label: 'Additional Skills', text: skills.join(', ') });
   if (certs.length) {
