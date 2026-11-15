@@ -6,9 +6,9 @@
 <title>Resume Tailor</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=20261116a">
+<link rel="stylesheet" href="style.css?v=20261116b">
 <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js" defer></script>
-<script src="app.js?v=20261116a" defer></script>
+<script src="app.js?v=20261116b" defer></script>
 </head>
 <body>
 <header class="hero no-print">
@@ -109,6 +109,13 @@
       <div id="certs" class="chips"></div>
       <p class="hint">Click once if you have it (✓). Click again if you're still studying for it (◐ in progress). Click a third time to remove it. They're added as one "Certifications" line.</p>
     </div>
+    <div id="weaveBar" class="card weaveBar hidden">
+      <div>
+        <strong>You've confirmed <span id="weaveCount">0 items</span>.</strong>
+        <span class="hint" id="weaveStatus">Right now they're on one line. Let AI work them into your summary and bullets for this job.</span>
+      </div>
+      <button id="weaveBtn" class="btn primary">✨ Work these into my resume</button>
+    </div>
     <div id="warnBox" class="card warn hidden">
       <h3>🔍 Please double-check</h3>
       <p>These words or numbers appear in the AI version but not in your original resume:</p>
@@ -126,10 +133,12 @@
   <div class="downloadBar no-print">
     <span class="dlTitle">Your tailored resume</span>
     <div class="dlBtns">
+      <button id="editBtn" class="btn ghost">✏️ Edit resume</button>
       <button id="pdfBtn" class="btn primary">⬇ Download PDF</button>
       <button id="docxBtn" class="btn ghost">⬇ Download Word</button>
     </div>
   </div>
+  <p id="editHint" class="editHint no-print hidden">✏️ Click anywhere on the resume and type to change it. Press Enter inside a bullet list to add a new bullet. Click <strong>Done editing</strong> when you're finished. Downloads include your changes.</p>
   <article id="preview" class="page"></article>
 </div>
 <footer class="foot no-print">Your resume is processed in your browser. AI mode sends the text only to the AI provider to rewrite it.</footer>

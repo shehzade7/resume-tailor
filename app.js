@@ -320,8 +320,11 @@ const ATTEMPTS = {
   } }
 };
 
-async function callAI(jd, resume, kws, matchedTerms, missingTerms) {
-  const user = `JOB DESCRIPTION:\n${jd}\n\nORIGINAL RESUME:\n${resume}\n\nJob keywords already supported by the resume (use the job's wording for these): ${matchedTerms.join(', ') || 'none'}\nJob keywords NOT in the resume (do not add; list as gaps): ${missingTerms.join(', ') || 'none'}`;
+async function callAI(jd, resume, kws, matchedTerms, missingTerms, confirmed = []) {
+  let user = `JOB DESCRIPTION:\n${jd}\n\nORIGINAL RESUME:\n${resume}\n\nJob keywords already supported by the resume (use the job's wording for these): ${matchedTerms.join(', ') || 'none'}\nJob keywords NOT in the resume (do not add; list as gaps): ${missingTerms.join(', ') || 'none'}`;
+  if (confirmed.length) {
+    user += `\n\nCONFIRMED BY THE CANDIDATE: they really have these skills/certifications, so you MAY add them: ${confirmed.join(', ')}.\nWork each one naturally into the summary, the competencies and the most relevant experience bullets, using the job description's wording. Put certifications in an "other" section with heading "Certifications". Do not invent numbers, durations, employers or results for them.`;
+  }
   const order = ['groq', 'gemini', 'server'].filter((k) => ATTEMPTS[k].key());
   if (!order.length) throw new Error('AI is not set up yet. Add your own key under "Use your own API keys", or use Keyword mode.');
   const errors = [];
@@ -672,25 +675,30 @@ function applyPicks(base, picks) {
   }
   return T;
 }
-function pickChips(el, arr, kind) {
+function pickChips(el, arr, kind, baseHay) {
   el.innerHTML = arr.length ? arr.map((x) => {
-    const how = state.picks.get(x);
+    // Already in the resume text (worked in by the AI or typed in by you).
+    const present = !state.picks.has(x) && hasPhrase(baseHay, norm(x));
+    const how = state.picks.get(x) || (present ? 'have' : undefined);
     const label = how === 'progress' ? '◐ ' + x + ' (in progress)' : how ? '✓ ' + x : '+ ' + x;
-    return `<button type="button" class="chip pick${how ? ' on' : ''}" data-kind="${kind}" data-term="${esc(x)}">${esc(label)}</button>`;
+    return `<button type="button" class="chip pick${how ? ' on' : ''}"${present ? ' disabled title="Already in your resume"' : ''} data-kind="${kind}" data-term="${esc(x)}">${esc(label)}</button>`;
   }).join('') : '<span class="hint">None</span>';
 }
+const aiAvailable = () => !!(WORKER_URL || $('groqKey').value.trim() || $('geminiKey').value.trim());
 function refresh() {
   const { kws } = state;
   const T = applyPicks(state.base, state.picks);
-  const hay = ' ' + norm(resumeText(T)) + ' ';
+  const hay = ' ' + norm(resumeText(T)) + ' ', baseHay = ' ' + norm(resumeText(state.base)) + ' ';
+  $('weaveBar').classList.toggle('hidden', !state.picks.size || !aiAvailable());
+  $('weaveCount').textContent = state.picks.size === 1 ? '1 item' : state.picks.size + ' items';
   const after = kws.filter((k) => matchInfo(k, hay));
   const pct = (n) => (kws.length ? Math.round((n / kws.length) * 100) : 0);
   $('scoreBefore').textContent = pct(state.before);
   $('scoreAfter').textContent = pct(after.length);
   $('ring').style.setProperty('--p', pct(after.length));
   chips($('matched'), after.map((k) => k.term));
-  pickChips($('missing'), state.gaps, 'skill');
-  pickChips($('certs'), state.certs, 'cert');
+  pickChips($('missing'), state.gaps, 'skill', baseHay);
+  pickChips($('certs'), state.certs, 'cert', baseHay);
   $('certBox').classList.toggle('hidden', !state.certs.length);
   $('preview').innerHTML = renderResume(T);
   current = T;
@@ -703,6 +711,104 @@ function togglePick(e) {
   const next = b.dataset.kind === 'cert' ? (now === undefined ? 'have' : now === 'have' ? 'progress' : null) : (now ? null : 'have');
   if (next) state.picks.set(term, next); else state.picks.delete(term);
   refresh();
+}
+
+// Clean-up after every AI rewrite; returns the "please double-check" list.
+function tidyAI(T, R, resume, kws, confirmed) {
+  // Always keep the original name, headline, location and contact details.
+  if (R.name) T.name = R.name;
+  if (R.contact) T.contact = R.contact;
+  // Remove "Expert"/"Expertise" from bold labels when the original never claims it.
+  if (!/\bexpert/i.test(resume)) {
+    const fix = (b) => ({ ...b, label: b.label.replace(/\s*\bexpert(ise)?\b/gi, '').trim() });
+    T.skills = T.skills.map(fix);
+    T.roles.forEach((r) => { r.bullets = r.bullets.map(fix); });
+  }
+  // Items you confirmed are allowed to be new.
+  const ok = new Set(confirmed.flatMap((c) => [norm(c), ...tokens(c).map(stem)]));
+  return checkInvented(resume, T, kws).filter((w) => !ok.has(norm(w)));
+}
+
+// "Work these into my resume": rewrite again, treating the ticked items as confirmed facts.
+async function weave() {
+  if (!state || !state.picks.size) return;
+  const confirmed = [...state.picks].map(([t, how]) => {
+    const parts = /^[A-Z0-9]+(\/[A-Z0-9]+)+$/.test(t) ? t.split('/') : [t];
+    return parts.map((p) => fullForm(p) + (how === 'progress' ? ' (in progress)' : '')).join(', ');
+  });
+  const { jd, resume, R, kws, matched, missing } = state;
+  $('weaveBtn').disabled = true;
+  setStatus('Working your confirmed skills into the resume...', false, true);
+  $('weaveStatus').textContent = 'Working them in...';
+  try {
+    const T = await callAI(jd, resume, kws, matched.map((k) => k.term), missing.map((k) => k.term).filter((m) => !state.picks.has(m)), confirmed);
+    const warnings = tidyAI(T, R, resume, kws, confirmed);
+    $('warnBox').classList.toggle('hidden', !warnings.length);
+    chips($('warnings'), warnings);
+    state.base = T;
+    state.picks = new Map();
+    refresh();
+    setStatus(`Done with ${T.usedBy}. Your confirmed skills are now part of the resume.`);
+    $('weaveStatus').textContent = '';
+    $('previewWrap').scrollIntoView({ behavior: 'smooth' });
+  } catch (e) {
+    setStatus(e.message || String(e), true);
+    $('weaveStatus').textContent = 'That didn\'t work. Your ticked items are still kept as one line.';
+  } finally {
+    $('weaveBtn').disabled = false;
+  }
+}
+
+// ---------- edit the resume directly in the preview ----------
+function htmlToResume(el) {
+  const T = { name: '', contact: '', summary: '', skills: [], roles: [], education: [], extras: [], additional: [] };
+  const liParse = (li) => {
+    const s = li.querySelector('strong');
+    const label = s ? s.textContent.replace(/:\s*$/, '').trim() : '';
+    const text = (s ? li.textContent.replace(s.textContent, '') : li.textContent).replace(/\s+/g, ' ').trim();
+    return { label, text };
+  };
+  const asLine = (b) => (b.label ? b.label + ': ' + b.text : b.text);
+  let sec = null, extra = null, role = null;
+  for (const n of el.children) {
+    const tag = n.tagName, txt = n.textContent.replace(/\s+/g, ' ').trim();
+    if (tag === 'H1') { T.name = txt; continue; }
+    if (n.classList.contains('contact')) { T.contact = txt; continue; }
+    if (tag === 'H2') {
+      const h = txt.toUpperCase();
+      sec = /SUMMARY/.test(h) ? 'summary' : /COMPETENC|SKILL/.test(h) ? 'skills' : /EXPERIENCE/.test(h) ? 'exp' : /EDUCATION/.test(h) ? 'edu' : /ADDITIONAL/.test(h) ? 'add' : 'extra';
+      if (sec === 'extra') { extra = { heading: txt, items: [] }; T.extras.push(extra); }
+      continue;
+    }
+    if (!txt) continue;
+    const items = tag === 'UL' || tag === 'OL' ? [...n.querySelectorAll('li')].map(liParse).filter((b) => b.text || b.label) : null;
+    if (sec === 'summary') T.summary = (T.summary + ' ' + txt).trim();
+    else if (sec === 'skills') { if (items) T.skills.push(...items); else txt.split(/\s*\|\s*/).filter(Boolean).forEach((t) => T.skills.push({ label: '', text: t })); }
+    else if (sec === 'exp') {
+      if (n.classList.contains('role')) { const sp = n.querySelectorAll('span'); role = { title: sp[0]?.textContent.trim() || txt, dates: sp[1]?.textContent.trim() || '', org: '', bullets: [] }; T.roles.push(role); }
+      else if (n.classList.contains('org') && role) role.org = txt;
+      else { if (!role) { role = { title: '', dates: '', org: '', bullets: [] }; T.roles.push(role); } role.bullets.push(...(items || [splitLabel(txt)])); }
+    } else if (sec === 'edu') T.education.push(...(items ? items.map(asLine) : [txt]));
+    else if (sec === 'add') T.additional.push(...(items ? items.map(asLine) : [txt]));
+    else if (sec === 'extra') extra.items.push(...(items ? items.map(asLine) : [txt]));
+  }
+  return T;
+}
+let editing = false;
+function toggleEdit(force) {
+  editing = typeof force === 'boolean' ? force : !editing;
+  const p = $('preview');
+  if (!editing) {
+    // Save what was typed, with ticked items baked in.
+    state.base = htmlToResume(p);
+    state.picks = new Map();
+    refresh();
+  }
+  p.contentEditable = editing ? 'true' : 'false';
+  p.classList.toggle('editing', editing);
+  $('editBtn').textContent = editing ? '✓ Done editing' : '✏️ Edit resume';
+  $('editHint').classList.toggle('hidden', !editing);
+  if (editing) p.focus();
 }
 
 function setStatus(msg, err, busy) {
@@ -720,21 +826,13 @@ async function run() {
   const oHay = ' ' + norm(resume) + ' ';
   const matched = kws.filter((k) => matchInfo(k, oHay)), missing = kws.filter((k) => !matchInfo(k, oHay));
   let T, warnings = [];
+  if (editing) { editing = false; $('preview').contentEditable = 'false'; $('preview').classList.remove('editing'); $('editBtn').textContent = '✏️ Edit resume'; $('editHint').classList.add('hidden'); }
   $('tailorBtn').disabled = true;
   try {
     if (isAI()) {
       saveSettings();
       T = await callAI(jd, resume, kws, matched.map((k) => k.term), missing.map((k) => k.term));
-      // Always keep the original name, headline, location and contact details.
-      if (R.name) T.name = R.name;
-      if (R.contact) T.contact = R.contact;
-      // Remove "Expert"/"Expertise" from bold labels when the original never claims it.
-      if (!/\bexpert/i.test(resume)) {
-        const fix = (b) => ({ ...b, label: b.label.replace(/\s*\bexpert(ise)?\b/gi, '').trim() });
-        T.skills = T.skills.map(fix);
-        T.roles.forEach((r) => { r.bullets = r.bullets.map(fix); });
-      }
-      warnings = checkInvented(resume, T, kws);
+      warnings = tidyAI(T, R, resume, kws, []);
     } else {
       T = tailorKeyword(R, kws);
     }
@@ -751,7 +849,7 @@ async function run() {
     certs = certs.filter((c) => !inside(c, certs) && !hasPhrase(baseHay, norm(c)));
     const certN = new Set(certs.map(norm));
     state = {
-      kws, base: T, before: matched.length, picks: new Map(), certs,
+      jd, resume, R, matched, missing, kws, base: T, before: matched.length, picks: new Map(), certs,
       gaps: kws.filter((k) => !matchInfo(k, baseHay) && !certN.has(k.n) && !isCertTerm(k.term) && !inside(k.term, certs)).map((k) => k.term)
     };
     refresh();
@@ -835,6 +933,9 @@ document.addEventListener('DOMContentLoaded', () => {
     showFileCard('Sample resume (Ravi Kumar)', SAMPLE_RESUME);
     setStatus('Sample loaded. Click "Tailor my resume".');
   });
-  $('pdfBtn').addEventListener('click', () => current && downloadPdf(current).catch((e) => setStatus('PDF export failed: ' + e.message, true)));
-  $('docxBtn').addEventListener('click', () => current && downloadDocx(current).catch((e) => setStatus('Word export failed: ' + e.message, true)));
+  // Finish any edit first so downloads include it.
+  $('pdfBtn').addEventListener('click', () => { if (editing) toggleEdit(false); current && downloadPdf(current).catch((e) => setStatus('PDF export failed: ' + e.message, true)); });
+  $('docxBtn').addEventListener('click', () => { if (editing) toggleEdit(false); current && downloadDocx(current).catch((e) => setStatus('Word export failed: ' + e.message, true)); });
+  $('editBtn').addEventListener('click', () => state && toggleEdit());
+  $('weaveBtn').addEventListener('click', weave);
 });
